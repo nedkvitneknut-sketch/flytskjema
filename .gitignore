@@ -10,3 +10,9 @@ desktop.ini
 # Midlertidige filer
 *.tmp
 ~$*
+
+# Node
+node_modules/
+
+# Hemmeligheter
+.env

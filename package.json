@@ -1,0 +1,17 @@
+{
+  "name": "flytskjema",
+  "version": "1.0.0",
+  "description": "Analyser flytskjema for varmeanlegg med KI og visualiser vannstrømmen.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
+    "express": "^5.2.1"
+  }
+}

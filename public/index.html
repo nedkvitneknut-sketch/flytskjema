@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flytskjema – KI-analyse av varmeanlegg</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Flytskjema<span class="accent">.</span></h1>
+    <p class="subtitle">Slipp et flytskjema for varmeanlegget – KI leser det, visualiserer vannstrømmen og foreslår energisparetiltak.</p>
+  </header>
+
+  <main>
+    <section id="dropzone" class="dropzone">
+      <div class="dropzone-inner">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 16V4m0 0l-4 4m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke-linecap="round"/>
+        </svg>
+        <p><strong>Slipp PDF eller bilde her</strong><br/>eller klikk for å velge fil</p>
+        <p class="hint">PDF · PNG · JPG · WEBP</p>
+      </div>
+      <input type="file" id="fileInput" accept="application/pdf,image/png,image/jpeg,image/webp,image/gif" hidden />
+    </section>
+
+    <section id="loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p id="loadingText">Analyserer flytskjemaet …</p>
+      <p class="hint">Dette tar gjerne 30–90 sekunder.</p>
+    </section>
+
+    <section id="error" class="error hidden"></section>
+
+    <section id="result" class="result hidden">
+      <div class="result-header">
+        <div>
+          <h2 id="systemName"></h2>
+          <p id="summary"></p>
+        </div>
+        <button id="resetBtn" class="btn-secondary">Nytt skjema</button>
+      </div>
+
+      <div class="result-grid">
+        <div class="diagram-panel">
+          <div class="legend">
+            <span><span class="dot dot-tur"></span> Tur (varmt vann)</span>
+            <span><span class="dot dot-retur"></span> Retur (avkjølt vann)</span>
+            <label class="speed">
+              Strømningshastighet
+              <input type="range" id="speedSlider" min="0.2" max="3" step="0.1" value="1" />
+            </label>
+          </div>
+          <div id="diagram" class="diagram"></div>
+        </div>
+
+        <aside class="opt-panel">
+          <h3>⚡ Energisparetiltak</h3>
+          <div id="optimizations"></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
