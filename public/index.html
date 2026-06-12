@@ -47,17 +47,59 @@
           <div class="legend">
             <span><span class="dot dot-tur"></span> Tur (varmt vann)</span>
             <span><span class="dot dot-retur"></span> Retur (avkjølt vann)</span>
-            <label class="speed">
-              Strømningshastighet
-              <input type="range" id="speedSlider" min="0.2" max="3" step="0.1" value="1" />
-            </label>
           </div>
           <div id="diagram" class="diagram"></div>
         </div>
 
-        <aside class="opt-panel">
-          <h3>⚡ Energisparetiltak</h3>
-          <div id="optimizations"></div>
+        <aside class="side-col">
+          <div class="sim-panel">
+            <h3>🔧 Simuler tiltak</h3>
+            <p class="sim-intro">Juster og se estimert besparelse. Forenklet modell – bruk som indikasjon.</p>
+
+            <div class="sim-inputs">
+              <label>
+                Årlig varmebehov
+                <span class="input-suffix"><input type="number" id="simDemand" value="100000" min="0" step="5000" /> kWh</span>
+              </label>
+              <label>
+                Energipris
+                <span class="input-suffix"><input type="number" id="simPrice" value="1.20" min="0" step="0.1" /> kr/kWh</span>
+              </label>
+            </div>
+
+            <label class="sim-slider">
+              <span>Senk turtemperatur <strong id="simDTVal">−0 °C</strong></span>
+              <input type="range" id="simDT" min="0" max="15" step="1" value="0" />
+            </label>
+
+            <label class="sim-slider">
+              <span>Pumpeturtall / vannstrøm <strong id="simPumpVal">100 %</strong></span>
+              <input type="range" id="simPump" min="50" max="100" step="5" value="100" />
+            </label>
+
+            <label class="sim-slider">
+              <span>Nattsenking <strong id="simNightVal">0 t/døgn</strong></span>
+              <input type="range" id="simNight" min="0" max="10" step="1" value="0" />
+            </label>
+
+            <div class="sim-result">
+              <div class="sim-total">
+                <span id="simTotal">0 %</span>
+                <small>estimert besparelse</small>
+              </div>
+              <div class="sim-numbers">
+                <div id="simKwh">0 kWh/år</div>
+                <div id="simKr">0 kr/år</div>
+              </div>
+            </div>
+
+            <ul id="simBreakdown" class="sim-breakdown"></ul>
+          </div>
+
+          <div class="opt-panel">
+            <h3>⚡ Energisparetiltak</h3>
+            <div id="optimizations"></div>
+          </div>
         </aside>
       </div>
     </section>
