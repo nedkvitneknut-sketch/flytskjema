@@ -167,17 +167,35 @@ function render(analysis) {
   currentAnalysis = analysis;
   document.getElementById("systemName").textContent = analysis.systemName;
   document.getElementById("summary").textContent = analysis.summary;
+  resultEl.classList.remove("hidden"); // synlig først, så lerretsbredden kan måles
   renderDiagram(analysis);
   renderOptimizations(analysis.optimizations);
   initSimulation(analysis);
-  resultEl.classList.remove("hidden");
 }
 
-const W = 1200, H = 660;
+let W = 1200;
+const H = 660;
 const PAD = 56;
 const BOX_W = 124, BOX_H = 48;
 const TUR_Y = H * 0.62;
 const RET_Y = TUR_Y + 24;
+
+// Lerretet følger panelbredden: på brede skjermer får du mer plass
+// i stedet for at alt skaleres opp (1 SVG-enhet ≈ 1 piksel).
+function updateCanvasWidth() {
+  const avail = diagramEl.clientWidth || diagramEl.parentElement?.clientWidth || 1200;
+  W = Math.max(1000, Math.round(avail) - 4);
+}
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (currentAnalysis && !resultEl.classList.contains("hidden")) {
+      renderDiagram(currentAnalysis);
+    }
+  }, 150);
+});
 
 // Fjerner følere/målere som likevel kom med, og brokobler rørene gjennom dem
 function pruneMeters(analysis) {
@@ -214,6 +232,7 @@ function pruneMeters(analysis) {
 }
 
 function renderDiagram(rawAnalysis) {
+  updateCanvasWidth();
   const analysis = pruneMeters(rawAnalysis);
   scene = buildScene(analysis);
   applyOverrides();
@@ -290,10 +309,15 @@ function buildScene(analysis) {
     };
   });
 
+  // Hver shunt ankres til stigerøret til kursen den betjener
+  // (leftmost hvis den betjener flere), og følger kursen ved flytting.
+  const feederAnchor = {};
   for (const f of feeders) {
-    const served = neighborsOf(f.id).filter((n) => consumerIds.has(n));
-    const xs = served.map((n) => layout[n]?.x ?? W * 0.6);
-    layout[f.id] = { x: xs.reduce((s, v) => s + v, 0) / xs.length, y: feederY };
+    const served = neighborsOf(f.id).filter((n) => consumerIds.has(n) && layout[n]);
+    served.sort((a, b) => layout[a].x - layout[b].x);
+    const anchor = served[0];
+    feederAnchor[f.id] = anchor || null;
+    layout[f.id] = { x: anchor ? layout[anchor].x : W * 0.6, y: feederY };
   }
 
   vessels.forEach((c, i) => {
@@ -334,7 +358,7 @@ function buildScene(analysis) {
   }
 
   return {
-    analysis, comps, conns, layout, roles,
+    analysis, comps, conns, layout, roles, feederAnchor, feeders,
     consumerIds, elevatedIds, vesselIds,
     sortedCons, elevated, vessels,
     turLabel, retLabel, trunkLabels,
@@ -377,6 +401,18 @@ function drawScene() {
   const s = scene;
   if (!s) return;
   const { layout } = s;
+
+  // Shunter sitter alltid midt på stigerøret til kursen sin
+  for (const f of s.feeders) {
+    const anchor = s.feederAnchor[f.id];
+    if (anchor && layout[anchor] && layout[f.id]) {
+      const consY = layout[anchor].y + BOX_H / 2;
+      layout[f.id] = {
+        x: layout[anchor].x,
+        y: Math.max(consY + BOX_H, Math.min(TUR_Y - BOX_H, layout[f.id].y)),
+      };
+    }
+  }
 
   const svg = [];
   svg.push(`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`);
