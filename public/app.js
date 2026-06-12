@@ -53,9 +53,7 @@ const SYMBOL_DEFS = `
   </symbol>
   <symbol id="ic-gulvvarme" viewBox="0 0 24 24">
     <path d="M3 20h18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-    <path d="M4 16c0-4 4-4 4-8s-4-4-4-8" transform="translate(2 4) scale(0.8)" fill="none" stroke="currentColor" stroke-width="1.4"/>
-    <path d="M4 16c0-4 4-4 4-8s-4-4-4-8" transform="translate(8 4) scale(0.8)" fill="none" stroke="currentColor" stroke-width="1.4"/>
-    <path d="M4 16c0-4 4-4 4-8s-4-4-4-8" transform="translate(14 4) scale(0.8)" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M5 16c0-3 3-3 3-6S5 7 5 4M10 16c0-3 3-3 3-6s-3-3-3-6M15 16c0-3 3-3 3-6s-3-3-3-6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
   </symbol>
   <symbol id="ic-ventilasjonsbatteri" viewBox="0 0 24 24">
     <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
@@ -174,7 +172,8 @@ function render(analysis) {
   resultEl.classList.remove("hidden");
 }
 
-const W = 1150, H = 720, PAD = 90;
+const W = 1200, H = 640;
+const PAD = 56;
 const BOX_W = 124, BOX_H = 48;
 
 // Fjerner følere/målere som likevel kom med, og brokobler rørene gjennom dem
@@ -211,142 +210,148 @@ function pruneMeters(analysis) {
   };
 }
 
-// Stamme-layout som etterligner et klassisk systemskjema:
-// produksjonskjeden (fjernvarme -> veksler -> spisslastkjeler -> pumpe) ligger
-// langs en horisontal stamme, forbrukerkursene står etter hverandre øverst,
-// shunter under kursene sine, og ekspansjonskar/tanker nederst.
-function trunkLayout(components, connections) {
-  const ids = new Set(components.map((c) => c.id));
-  const conns = connections.filter((c) => ids.has(c.from) && ids.has(c.to));
+// Klassisk systemskjema: rød tur-skinne og blå retur-skinne horisontalt,
+// produksjon til venstre (kjeler hevet over skinnene), kurser som tapper
+// av vertikalt oppover, ekspansjonskar under.
+function renderDiagram(rawAnalysis) {
+  const analysis = pruneMeters(rawAnalysis);
+  const comps = analysis.components;
+  const ids = new Set(comps.map((c) => c.id));
+  const conns = analysis.connections.filter((c) => ids.has(c.from) && ids.has(c.to));
   const neighborsOf = (id) =>
     conns.filter((c) => c.from === id || c.to === id).map((c) => (c.from === id ? c.to : c.from));
 
-  const consumers = components.filter((c) => CONSUMERS.has(c.type));
+  // Klassifisering
+  const consumers = comps.filter((c) => CONSUMERS.has(c.type));
   const consumerIds = new Set(consumers.map((c) => c.id));
-  const vessels = components.filter((c) => c.type === "ekspansjonskar" || c.type === "tank");
+  const vessels = comps.filter((c) => c.type === "ekspansjonskar" || c.type === "tank");
   const vesselIds = new Set(vessels.map((c) => c.id));
-
-  // Shunter/ventiler som betjener konkrete kurser legges mellom stammen og kursene
-  const feeders = components.filter(
+  const feeders = comps.filter(
     (c) =>
       (c.type === "ventil" || c.type === "shuntventil") &&
       neighborsOf(c.id).some((n) => consumerIds.has(n))
   );
   const feederIds = new Set(feeders.map((c) => c.id));
 
-  // Produksjonskjeden i fast rekkefølge: grunnlast -> veksler -> spisslast -> pumpe
+  const elevated = comps.filter(
+    (c) => c.type === "kjel" && !consumerIds.has(c.id)
+  );
+  const elevatedIds = new Set(elevated.map((c) => c.id));
+
   const chainScore = { fjernvarme: 0, varmepumpe: 0, solfanger: 0, varmeveksler: 1, kjel: 2, pumpe: 3 };
-  const chain = components
+  const chainSeq = comps
     .filter((c) => !consumerIds.has(c.id) && !feederIds.has(c.id) && !vesselIds.has(c.id))
     .sort((a, b) => (chainScore[a.type] ?? 4) - (chainScore[b.type] ?? 4) || a.x - b.x);
 
-  const layout = {};
-  const trunkY = H * 0.56;
-  const consumerY = H * 0.15;
-  const feederY = H * 0.36;
-  const vesselY = H * 0.85;
+  // Geometri
+  const turY = H * 0.62;
+  const retY = turY + 24;
+  const topY = H * 0.16;
+  const feederY = H * 0.385;
+  const kjelY = turY - 120;
+  const vesselY = H * 0.9;
 
-  const chainEndX = W * 0.5;
-  const cSpacing =
-    chain.length > 1 ? Math.min(BOX_W + 60, (chainEndX - PAD) / (chain.length - 1)) : 0;
-  chain.forEach((c, i) => {
-    layout[c.id] = { x: PAD + i * cSpacing, y: trunkY };
-  });
+  const layout = {};
+  let cursor = PAD + BOX_W / 2;
+  const chainStep = Math.min(
+    BOX_W + 46,
+    chainSeq.length > 1 ? (W * 0.42 - PAD) / (chainSeq.length - 1) : BOX_W + 46
+  );
+  for (const c of chainSeq) {
+    layout[c.id] = { x: cursor, y: elevatedIds.has(c.id) ? kjelY : (turY + retY) / 2 };
+    cursor += chainStep;
+  }
+  const chainEndX = cursor - chainStep;
 
   // Kursene etter hverandre øverst, i samme rekkefølge som i originaltegningen
   const sortedCons = [...consumers].sort((a, b) => a.x - b.x || a.y - b.y);
-  const consStart = W * 0.44;
-  const consEnd = W - PAD;
+  const consStart = Math.max(chainEndX + BOX_W, W * 0.46);
+  const consEnd = W - PAD - BOX_W / 2;
   const kSpacing = sortedCons.length > 1 ? (consEnd - consStart) / (sortedCons.length - 1) : 0;
+  const stagger = kSpacing > 0 && kSpacing < BOX_W + 14;
   sortedCons.forEach((c, i) => {
     layout[c.id] = {
       x: sortedCons.length > 1 ? consStart + i * kSpacing : consEnd,
-      y: consumerY,
+      y: topY + (stagger && i % 2 === 1 ? BOX_H + 22 : 0),
     };
   });
 
-  // Shunter rett under kursene de betjener
+  // Shunter på stigerøret til kursene de betjener
   for (const f of feeders) {
     const served = neighborsOf(f.id).filter((n) => consumerIds.has(n));
     const xs = served.map((n) => layout[n]?.x ?? W * 0.6);
     layout[f.id] = { x: xs.reduce((s, v) => s + v, 0) / xs.length, y: feederY };
   }
 
-  // Ekspansjonskar/tanker under stammen
+  // Ekspansjonskar/tanker under skinnene
   vessels.forEach((c, i) => {
-    layout[c.id] = { x: chainEndX - i * (BOX_W + 40), y: vesselY };
+    layout[c.id] = { x: Math.max(PAD + BOX_W / 2, chainEndX - i * (BOX_W + 40)), y: vesselY };
   });
 
-  relax(layout);
-  return layout;
-}
-
-function relax(layout) {
-  const entries = Object.values(layout);
-  const minDx = BOX_W + 24;
-  const minDy = BOX_H + 20;
-  for (let iter = 0; iter < 120; iter++) {
-    let moved = false;
-    for (let i = 0; i < entries.length; i++) {
-      for (let j = i + 1; j < entries.length; j++) {
-        const a = entries[i], b = entries[j];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const ox = minDx - Math.abs(dx), oy = minDy - Math.abs(dy);
-        if (ox > 0 && oy > 0) {
-          moved = true;
-          if (ox / minDx < oy / minDy) {
-            const push = (ox / 2 + 1) * (dx >= 0 ? 1 : -1);
-            a.x -= push;
-            b.x += push;
-          } else {
-            const push = (oy / 2 + 1) * (dy >= 0 ? 1 : -1);
-            a.y -= push;
-            b.y += push;
-          }
-        }
-      }
+  // Temperatur-etiketter per kurs (fra modellens forbindelser)
+  const consLabel = {};
+  for (const cn of conns) {
+    if (cn.label) {
+      if (consumerIds.has(cn.to)) consLabel[cn.to] = consLabel[cn.to] || cn.label;
+      if (consumerIds.has(cn.from)) consLabel[cn.from] = consLabel[cn.from] || cn.label;
     }
-    if (!moved) break;
   }
-  for (const p of entries) {
-    p.x = Math.max(PAD - 20, Math.min(W - PAD + 20, p.x));
-    p.y = Math.max(PAD - 40, Math.min(H - PAD + 40, p.y));
-  }
-}
 
-function renderDiagram(rawAnalysis) {
-  const analysis = pruneMeters(rawAnalysis);
-  const byId = {};
-  for (const c of analysis.components) byId[c.id] = c;
-  const layout = trunkLayout(analysis.components, analysis.connections);
-
+  // --- Tegn ---
   const svg = [];
   svg.push(`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`);
   svg.push(SYMBOL_DEFS);
 
-  // Rør først (bak komponentene)
-  for (const conn of analysis.connections) {
-    const a = byId[conn.from];
-    const b = byId[conn.to];
-    if (!a || !b) continue;
-    const pa = layout[a.id], pb = layout[b.id];
+  const trunkStart = PAD - 14;
+  const lastRiserX = sortedCons.length ? Math.max(...sortedCons.map((c) => layout[c.id].x)) : chainEndX;
+  const trunkEnd = Math.min(W - 24, lastRiserX + 40);
 
-    const offset = conn.type === "tur" ? -6 : conn.type === "retur" ? 6 : 0;
-    const { path, mid } = pipePath(pa, pb, offset);
+  // Hovedskinner: tur mot høyre, retur tilbake mot venstre
+  const turPath = `M ${trunkStart} ${turY} L ${trunkEnd} ${turY}`;
+  const retPath = `M ${trunkEnd} ${retY} L ${trunkStart} ${retY}`;
+  svg.push(`<path class="pipe tur" d="${turPath}"/>`);
+  svg.push(`<path class="flow tur" d="${turPath}"/>`);
+  svg.push(`<path class="pipe retur" d="${retPath}"/>`);
+  svg.push(`<path class="flow retur" d="${retPath}"/>`);
 
-    svg.push(`<path class="pipe ${conn.type}" d="${path}"/>`);
-    svg.push(`<path class="flow ${conn.type}" d="${path}"/>`);
+  // Spisslastkjeler over skinnene: fall ned til tur, løft fra retur
+  for (const c of elevated) {
+    const { x } = layout[c.id];
+    const boxBottom = kjelY + BOX_H / 2;
+    const tur = `M ${x - 8} ${boxBottom} L ${x - 8} ${turY}`;
+    const ret = `M ${x + 8} ${retY} L ${x + 8} ${boxBottom}`;
+    svg.push(`<path class="pipe tur" d="${tur}"/><path class="flow tur" d="${tur}"/>`);
+    svg.push(`<path class="pipe retur" d="${ret}"/><path class="flow retur" d="${ret}"/>`);
+  }
 
-    if (conn.label) {
-      svg.push(`<text class="pipe-label" x="${mid.x}" y="${mid.y - 5}">${esc(conn.label)}</text>`);
+  // Stigerør til hver kurs: tur opp, retur ned
+  for (const c of sortedCons) {
+    const { x, y } = layout[c.id];
+    const boxBottom = y + BOX_H / 2;
+    const tur = `M ${x - 8} ${turY} L ${x - 8} ${boxBottom}`;
+    const ret = `M ${x + 8} ${boxBottom} L ${x + 8} ${retY}`;
+    svg.push(`<path class="pipe tur" d="${tur}"/><path class="flow tur" d="${tur}"/>`);
+    svg.push(`<path class="pipe retur" d="${ret}"/><path class="flow retur" d="${ret}"/>`);
+    if (consLabel[c.id]) {
+      svg.push(
+        `<text class="pipe-label" x="${x - 14}" y="${(turY + boxBottom) / 2}" text-anchor="end">${esc(consLabel[c.id])}</text>`
+      );
     }
   }
 
-  // Komponenter
-  for (const c of analysis.components) {
+  // Ekspansjonskar: enkel ledning ned fra returskinnen
+  for (const c of vessels) {
+    const { x, y } = layout[c.id];
+    const line = `M ${x} ${retY} L ${x} ${y - BOX_H / 2}`;
+    svg.push(`<path class="pipe annet" d="${line}" stroke-dasharray="4 5"/>`);
+  }
+
+  // Komponentbokser (over linjene)
+  for (const c of comps) {
+    if (!layout[c.id]) continue;
     const { x: cx, y: cy } = layout[c.id];
     const cls = SOURCES.has(c.type) ? "source" : CONSUMERS.has(c.type) ? "consumer" : "";
-    const icon = `ic-${c.type in ICON_TYPES ? c.type : "annet"}`;
+    const icon = `ic-${ICON_TYPES[c.type] ? c.type : "annet"}`;
     svg.push(`<g>`);
     svg.push(
       `<rect class="comp-box ${cls}" x="${cx - BOX_W / 2}" y="${cy - BOX_H / 2}" width="${BOX_W}" height="${BOX_H}" rx="9"/>`
@@ -362,6 +367,10 @@ function renderDiagram(rawAnalysis) {
     svg.push(`</g>`);
   }
 
+  // Skinne-etiketter
+  svg.push(`<text class="pipe-label" x="${trunkStart + 4}" y="${turY - 8}" text-anchor="start">Tur</text>`);
+  svg.push(`<text class="pipe-label" x="${trunkStart + 4}" y="${retY + 16}" text-anchor="start">Retur</text>`);
+
   svg.push(`</svg>`);
   diagramEl.innerHTML = svg.join("");
   applyFlowSpeed();
@@ -372,44 +381,6 @@ const ICON_TYPES = {
   varmeveksler: 1, ventil: 1, shuntventil: 1, radiator: 1, gulvvarme: 1,
   ventilasjonsbatteri: 1, tank: 1, ekspansjonskar: 1, maaler: 1, annet: 1,
 };
-
-// Ortogonal rute som går fra kant til kant på boksene, ikke gjennom dem
-function pipePath(pa, pb, offset) {
-  const dx = pb.x - pa.x;
-  const dy = pb.y - pa.y;
-
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    // koble høyre kant -> venstre kant (eller omvendt)
-    const dir = dx >= 0 ? 1 : -1;
-    const x1 = pa.x + dir * (BOX_W / 2);
-    const y1 = pa.y + offset;
-    const x2 = pb.x - dir * (BOX_W / 2);
-    const y2 = pb.y + offset;
-    const mx = (x1 + x2) / 2 + offset;
-    if (Math.abs(y1 - y2) < 6) {
-      return { path: `M ${x1} ${y1} L ${x2} ${y2}`, mid: { x: (x1 + x2) / 2, y: y1 } };
-    }
-    return {
-      path: `M ${x1} ${y1} L ${mx} ${y1} L ${mx} ${y2} L ${x2} ${y2}`,
-      mid: { x: mx, y: (y1 + y2) / 2 },
-    };
-  } else {
-    // koble bunn -> topp (eller omvendt)
-    const dir = dy >= 0 ? 1 : -1;
-    const x1 = pa.x + offset;
-    const y1 = pa.y + dir * (BOX_H / 2);
-    const x2 = pb.x + offset;
-    const y2 = pb.y - dir * (BOX_H / 2);
-    const my = (y1 + y2) / 2 + offset;
-    if (Math.abs(x1 - x2) < 6) {
-      return { path: `M ${x1} ${y1} L ${x2} ${y2}`, mid: { x: x1, y: (y1 + y2) / 2 } };
-    }
-    return {
-      path: `M ${x1} ${y1} L ${x1} ${my} L ${x2} ${my} L ${x2} ${y2}`,
-      mid: { x: (x1 + x2) / 2, y: my },
-    };
-  }
-}
 
 function renderOptimizations(opts) {
   const order = { hoy: 0, middels: 1, lav: 2 };
