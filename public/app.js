@@ -321,8 +321,20 @@ function buildScene(analysis) {
   const key =
     "layout:" + analysis.systemName + "|" + comps.map((c) => c.id).sort().join(",");
 
+  // Roller styrer hvordan komponentene kan flyttes:
+  // chain ligger PÅ skinnene og kan bare gli horisontalt langs dem,
+  // feeders ligger på stigerøret og kan bare gli vertikalt.
+  const roles = {};
+  for (const c of comps) {
+    if (vesselIds.has(c.id)) roles[c.id] = "vessel";
+    else if (consumerIds.has(c.id)) roles[c.id] = "consumer";
+    else if (feederIds.has(c.id)) roles[c.id] = "feeder";
+    else if (elevatedIds.has(c.id)) roles[c.id] = "elevated";
+    else roles[c.id] = "chain";
+  }
+
   return {
-    analysis, comps, conns, layout,
+    analysis, comps, conns, layout, roles,
     consumerIds, elevatedIds, vesselIds,
     sortedCons, elevated, vessels,
     turLabel, retLabel, trunkLabels,
@@ -486,10 +498,25 @@ diagramEl.addEventListener("pointerdown", (e) => {
 window.addEventListener("pointermove", (e) => {
   if (!dragState || !scene) return;
   const pt = svgPoint(e);
-  scene.layout[dragState.id] = {
-    x: Math.max(BOX_W / 2, Math.min(W - BOX_W / 2, pt.x + dragState.dx)),
-    y: Math.max(BOX_H / 2, Math.min(H - BOX_H / 2, pt.y + dragState.dy)),
-  };
+  const cur = scene.layout[dragState.id];
+  const role = scene.roles[dragState.id];
+
+  let x = Math.max(BOX_W / 2, Math.min(W - BOX_W / 2, pt.x + dragState.dx));
+  let y = Math.max(BOX_H / 2, Math.min(H - BOX_H / 2, pt.y + dragState.dy));
+
+  if (role === "chain") {
+    // Ligger på skinnene: kan bare gli langs røret
+    y = (TUR_Y + RET_Y) / 2;
+  } else if (role === "feeder") {
+    // Ligger på stigerøret: kan bare gli vertikalt, mellom skinne og kurs
+    x = cur.x;
+    y = Math.min(TUR_Y - BOX_H / 2 - 6, y);
+  } else if (role === "vessel") {
+    // Henger under returskinnen: glir langs skinnen, holder seg under
+    y = Math.max(RET_Y + BOX_H / 2 + 16, y);
+  }
+
+  scene.layout[dragState.id] = { x, y };
   drawScene();
 });
 
