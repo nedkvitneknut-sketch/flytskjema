@@ -138,6 +138,7 @@ async function handleFile(file) {
     });
     const json = await resp.json();
     if (!resp.ok) throw new Error(json.error || "Analysen feilet.");
+    try { localStorage.setItem("lastAnalysis", JSON.stringify(json)); } catch {}
     render(json);
   } catch (err) {
     showError(err.message);
@@ -210,100 +211,72 @@ function pruneMeters(analysis) {
   };
 }
 
-// Lagdelt layout: varmekilder til venstre, forbrukere til høyre,
-// plassering i kolonner etter hvor langt ut i strømmen komponenten er.
-function layeredLayout(components, connections) {
+// Stamme-layout som etterligner et klassisk systemskjema:
+// produksjonskjeden (fjernvarme -> veksler -> spisslastkjeler -> pumpe) ligger
+// langs en horisontal stamme, forbrukerkursene står etter hverandre øverst,
+// shunter under kursene sine, og ekspansjonskar/tanker nederst.
+function trunkLayout(components, connections) {
   const ids = new Set(components.map((c) => c.id));
+  const conns = connections.filter((c) => ids.has(c.from) && ids.has(c.to));
+  const neighborsOf = (id) =>
+    conns.filter((c) => c.from === id || c.to === id).map((c) => (c.from === id ? c.to : c.from));
 
-  // Normaliser kantene til strømretning (retur snus)
-  const adj = new Map();
-  const indeg = new Map();
-  for (const c of components) {
-    adj.set(c.id, []);
-    indeg.set(c.id, 0);
-  }
-  const seen = new Set();
-  for (const cn of connections) {
-    if (!ids.has(cn.from) || !ids.has(cn.to)) continue;
-    const [f, t] = cn.type === "retur" ? [cn.to, cn.from] : [cn.from, cn.to];
-    const key = f + "→" + t;
-    if (f === t || seen.has(key)) continue;
-    seen.add(key);
-    adj.get(f).push(t);
-    indeg.set(t, indeg.get(t) + 1);
-  }
+  const consumers = components.filter((c) => CONSUMERS.has(c.type));
+  const consumerIds = new Set(consumers.map((c) => c.id));
+  const vessels = components.filter((c) => c.type === "ekspansjonskar" || c.type === "tank");
+  const vesselIds = new Set(vessels.map((c) => c.id));
 
-  // Kolonne = lengste vei fra en varmekilde (DFS med syklusvern)
-  const layer = new Map();
-  const visiting = new Set();
-  function assign(id, l) {
-    if (visiting.has(id)) return;
-    if ((layer.get(id) ?? -1) >= l) return;
-    layer.set(id, l);
-    visiting.add(id);
-    for (const t of adj.get(id)) assign(t, l + 1);
-    visiting.delete(id);
-  }
-  const sources = components.filter((c) => SOURCES.has(c.type));
-  const roots = sources.length
-    ? sources
-    : components.filter((c) => indeg.get(c.id) === 0);
-  for (const r of (roots.length ? roots : components)) assign(r.id, 0);
-  for (const c of components) if (!layer.has(c.id)) assign(c.id, 1);
+  // Shunter/ventiler som betjener konkrete kurser legges mellom stammen og kursene
+  const feeders = components.filter(
+    (c) =>
+      (c.type === "ventil" || c.type === "shuntventil") &&
+      neighborsOf(c.id).some((n) => consumerIds.has(n))
+  );
+  const feederIds = new Set(feeders.map((c) => c.id));
 
-  // Forbrukere skyves til siste kolonne for et ryddigere bilde
-  const maxL = Math.max(...layer.values(), 0);
-  for (const c of components) {
-    if (CONSUMERS.has(c.type) && adj.get(c.id).length === 0) layer.set(c.id, maxL);
-  }
+  // Produksjonskjeden i fast rekkefølge: grunnlast -> veksler -> spisslast -> pumpe
+  const chainScore = { fjernvarme: 0, varmepumpe: 0, solfanger: 0, varmeveksler: 1, kjel: 2, pumpe: 3 };
+  const chain = components
+    .filter((c) => !consumerIds.has(c.id) && !feederIds.has(c.id) && !vesselIds.has(c.id))
+    .sort((a, b) => (chainScore[a.type] ?? 4) - (chainScore[b.type] ?? 4) || a.x - b.x);
 
-  // Grupper per kolonne, sorter etter KI-ens y som utgangspunkt
-  const groups = Array.from({ length: maxL + 1 }, () => []);
-  for (const c of components) groups[layer.get(c.id)].push(c);
-  for (const g of groups) g.sort((a, b) => a.y - b.y);
-
-  // Barysenter-sortering: legg hver boks nær snittet av naboene sine
-  const undirected = new Map();
-  for (const c of components) undirected.set(c.id, []);
-  for (const cn of connections) {
-    if (!ids.has(cn.from) || !ids.has(cn.to)) continue;
-    undirected.get(cn.from).push(cn.to);
-    undirected.get(cn.to).push(cn.from);
-  }
-  const orderOf = new Map();
-  const refreshOrder = () => {
-    for (const g of groups) g.forEach((c, i) => orderOf.set(c.id, i));
-  };
-  refreshOrder();
-  for (let sweep = 0; sweep < 4; sweep++) {
-    for (const g of groups) {
-      g.sort((a, b) => bary(a) - bary(b));
-    }
-    refreshOrder();
-  }
-  function bary(c) {
-    const nb = undirected.get(c.id);
-    if (!nb.length) return orderOf.get(c.id);
-    return nb.reduce((s, n) => s + (orderOf.get(n) ?? 0), 0) / nb.length;
-  }
-
-  // Pikselkoordinater
-  const nonEmpty = groups.filter((g) => g.length).length;
-  const colW = (W - 2 * PAD) / Math.max(1, nonEmpty - 1 || 1);
   const layout = {};
-  let col = 0;
-  for (const g of groups) {
-    if (!g.length) continue;
-    const x = PAD + col * colW;
-    const spacing = Math.min(BOX_H + 46, (H - 2 * PAD) / Math.max(1, g.length - 1 || 1));
-    const startY = H / 2 - ((g.length - 1) * spacing) / 2;
-    g.forEach((c, i) => {
-      layout[c.id] = { x, y: startY + i * spacing };
-    });
-    col++;
+  const trunkY = H * 0.56;
+  const consumerY = H * 0.15;
+  const feederY = H * 0.36;
+  const vesselY = H * 0.85;
+
+  const chainEndX = W * 0.5;
+  const cSpacing =
+    chain.length > 1 ? Math.min(BOX_W + 60, (chainEndX - PAD) / (chain.length - 1)) : 0;
+  chain.forEach((c, i) => {
+    layout[c.id] = { x: PAD + i * cSpacing, y: trunkY };
+  });
+
+  // Kursene etter hverandre øverst, i samme rekkefølge som i originaltegningen
+  const sortedCons = [...consumers].sort((a, b) => a.x - b.x || a.y - b.y);
+  const consStart = W * 0.44;
+  const consEnd = W - PAD;
+  const kSpacing = sortedCons.length > 1 ? (consEnd - consStart) / (sortedCons.length - 1) : 0;
+  sortedCons.forEach((c, i) => {
+    layout[c.id] = {
+      x: sortedCons.length > 1 ? consStart + i * kSpacing : consEnd,
+      y: consumerY,
+    };
+  });
+
+  // Shunter rett under kursene de betjener
+  for (const f of feeders) {
+    const served = neighborsOf(f.id).filter((n) => consumerIds.has(n));
+    const xs = served.map((n) => layout[n]?.x ?? W * 0.6);
+    layout[f.id] = { x: xs.reduce((s, v) => s + v, 0) / xs.length, y: feederY };
   }
 
-  // Sikkerhetsnett: dytt fra hverandre om noe likevel kolliderer
+  // Ekspansjonskar/tanker under stammen
+  vessels.forEach((c, i) => {
+    layout[c.id] = { x: chainEndX - i * (BOX_W + 40), y: vesselY };
+  });
+
   relax(layout);
   return layout;
 }
@@ -321,9 +294,15 @@ function relax(layout) {
         const ox = minDx - Math.abs(dx), oy = minDy - Math.abs(dy);
         if (ox > 0 && oy > 0) {
           moved = true;
-          const push = (oy / 2 + 1) * (dy >= 0 ? 1 : -1);
-          a.y -= push;
-          b.y += push;
+          if (ox / minDx < oy / minDy) {
+            const push = (ox / 2 + 1) * (dx >= 0 ? 1 : -1);
+            a.x -= push;
+            b.x += push;
+          } else {
+            const push = (oy / 2 + 1) * (dy >= 0 ? 1 : -1);
+            a.y -= push;
+            b.y += push;
+          }
         }
       }
     }
@@ -339,7 +318,7 @@ function renderDiagram(rawAnalysis) {
   const analysis = pruneMeters(rawAnalysis);
   const byId = {};
   for (const c of analysis.components) byId[c.id] = c;
-  const layout = layeredLayout(analysis.components, analysis.connections);
+  const layout = trunkLayout(analysis.components, analysis.connections);
 
   const svg = [];
   svg.push(`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`);
@@ -522,13 +501,12 @@ function updateSimulation() {
   applyFlowSpeed();
 }
 
-// Vannstrøm-animasjonen følger pumpeturtallet
+// Vannstrøm-animasjonen følger pumpeturtallet.
+// Settes som CSS-variabel på containeren så den treffer alle rør, også nye.
 function applyFlowSpeed() {
   const pumpPct = parseFloat(sim.pump.value) || 100;
-  const duration = 1 / Math.max(0.15, pumpPct / 100);
-  diagramEl.querySelectorAll(".flow").forEach((el) => {
-    el.style.animationDuration = `${duration}s`;
-  });
+  const duration = Math.pow(100 / pumpPct, 1.8); // 100 % -> 1s, 50 % -> ~3,5s
+  diagramEl.style.setProperty("--flow-dur", `${duration.toFixed(2)}s`);
 }
 
 // --- Hjelpere ---
@@ -542,3 +520,12 @@ function esc(s) {
 function trunc(s, n) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
+
+// Gjenopprett forrige analyse ved sideinnlasting (sparer API-kall under testing)
+try {
+  const saved = localStorage.getItem("lastAnalysis");
+  if (saved) {
+    dropzone.classList.add("hidden");
+    render(JSON.parse(saved));
+  }
+} catch {}

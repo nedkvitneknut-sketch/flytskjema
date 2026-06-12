@@ -175,7 +175,7 @@ main { padding: 20px 32px 48px; }
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-dasharray: 6 8;
-  animation: flow 1s linear infinite;
+  animation: flow var(--flow-dur, 1s) linear infinite;
 }
 .pipe.tur, .flow.tur { stroke: var(--tur); }
 .pipe.retur, .flow.retur { stroke: var(--retur); }
