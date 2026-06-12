@@ -173,59 +173,173 @@ function render(analysis) {
   resultEl.classList.remove("hidden");
 }
 
-const W = 1150, H = 720, PAD = 80;
+const W = 1150, H = 720, PAD = 90;
 const BOX_W = 124, BOX_H = 48;
 
-function sx(x) { return PAD + (x / 100) * (W - 2 * PAD); }
-function sy(y) { return PAD + (y / 100) * (H - 2 * PAD); }
+// Fjerner følere/målere som likevel kom med, og brokobler rørene gjennom dem
+function pruneMeters(analysis) {
+  const meters = new Set(
+    analysis.components.filter((c) => c.type === "maaler").map((c) => c.id)
+  );
+  if (!meters.size) return analysis;
 
-// Dytter overlappende bokser fra hverandre til alle har luft rundt seg
-function resolveOverlaps(components) {
-  const pos = components.map((c) => ({ c, x: sx(c.x), y: sy(c.y) }));
-  const minDx = BOX_W + 26;
-  const minDy = BOX_H + 24;
+  const byId = {};
+  for (const c of analysis.components) byId[c.id] = c;
 
-  for (let iter = 0; iter < 300; iter++) {
+  let conns = analysis.connections;
+  for (const mid of meters) {
+    const incoming = conns.filter((c) => c.to === mid && !meters.has(c.from));
+    const outgoing = conns.filter((c) => c.from === mid && !meters.has(c.to));
+    const bridged = [];
+    if (incoming.length === 1 && outgoing.length === 1) {
+      const m = byId[mid];
+      bridged.push({
+        from: incoming[0].from,
+        to: outgoing[0].to,
+        type: outgoing[0].type,
+        label: incoming[0].label || m.info || m.label || "",
+      });
+    }
+    conns = conns.filter((c) => c.from !== mid && c.to !== mid).concat(bridged);
+  }
+
+  return {
+    ...analysis,
+    components: analysis.components.filter((c) => !meters.has(c.id)),
+    connections: conns,
+  };
+}
+
+// Lagdelt layout: varmekilder til venstre, forbrukere til høyre,
+// plassering i kolonner etter hvor langt ut i strømmen komponenten er.
+function layeredLayout(components, connections) {
+  const ids = new Set(components.map((c) => c.id));
+
+  // Normaliser kantene til strømretning (retur snus)
+  const adj = new Map();
+  const indeg = new Map();
+  for (const c of components) {
+    adj.set(c.id, []);
+    indeg.set(c.id, 0);
+  }
+  const seen = new Set();
+  for (const cn of connections) {
+    if (!ids.has(cn.from) || !ids.has(cn.to)) continue;
+    const [f, t] = cn.type === "retur" ? [cn.to, cn.from] : [cn.from, cn.to];
+    const key = f + "→" + t;
+    if (f === t || seen.has(key)) continue;
+    seen.add(key);
+    adj.get(f).push(t);
+    indeg.set(t, indeg.get(t) + 1);
+  }
+
+  // Kolonne = lengste vei fra en varmekilde (DFS med syklusvern)
+  const layer = new Map();
+  const visiting = new Set();
+  function assign(id, l) {
+    if (visiting.has(id)) return;
+    if ((layer.get(id) ?? -1) >= l) return;
+    layer.set(id, l);
+    visiting.add(id);
+    for (const t of adj.get(id)) assign(t, l + 1);
+    visiting.delete(id);
+  }
+  const sources = components.filter((c) => SOURCES.has(c.type));
+  const roots = sources.length
+    ? sources
+    : components.filter((c) => indeg.get(c.id) === 0);
+  for (const r of (roots.length ? roots : components)) assign(r.id, 0);
+  for (const c of components) if (!layer.has(c.id)) assign(c.id, 1);
+
+  // Forbrukere skyves til siste kolonne for et ryddigere bilde
+  const maxL = Math.max(...layer.values(), 0);
+  for (const c of components) {
+    if (CONSUMERS.has(c.type) && adj.get(c.id).length === 0) layer.set(c.id, maxL);
+  }
+
+  // Grupper per kolonne, sorter etter KI-ens y som utgangspunkt
+  const groups = Array.from({ length: maxL + 1 }, () => []);
+  for (const c of components) groups[layer.get(c.id)].push(c);
+  for (const g of groups) g.sort((a, b) => a.y - b.y);
+
+  // Barysenter-sortering: legg hver boks nær snittet av naboene sine
+  const undirected = new Map();
+  for (const c of components) undirected.set(c.id, []);
+  for (const cn of connections) {
+    if (!ids.has(cn.from) || !ids.has(cn.to)) continue;
+    undirected.get(cn.from).push(cn.to);
+    undirected.get(cn.to).push(cn.from);
+  }
+  const orderOf = new Map();
+  const refreshOrder = () => {
+    for (const g of groups) g.forEach((c, i) => orderOf.set(c.id, i));
+  };
+  refreshOrder();
+  for (let sweep = 0; sweep < 4; sweep++) {
+    for (const g of groups) {
+      g.sort((a, b) => bary(a) - bary(b));
+    }
+    refreshOrder();
+  }
+  function bary(c) {
+    const nb = undirected.get(c.id);
+    if (!nb.length) return orderOf.get(c.id);
+    return nb.reduce((s, n) => s + (orderOf.get(n) ?? 0), 0) / nb.length;
+  }
+
+  // Pikselkoordinater
+  const nonEmpty = groups.filter((g) => g.length).length;
+  const colW = (W - 2 * PAD) / Math.max(1, nonEmpty - 1 || 1);
+  const layout = {};
+  let col = 0;
+  for (const g of groups) {
+    if (!g.length) continue;
+    const x = PAD + col * colW;
+    const spacing = Math.min(BOX_H + 46, (H - 2 * PAD) / Math.max(1, g.length - 1 || 1));
+    const startY = H / 2 - ((g.length - 1) * spacing) / 2;
+    g.forEach((c, i) => {
+      layout[c.id] = { x, y: startY + i * spacing };
+    });
+    col++;
+  }
+
+  // Sikkerhetsnett: dytt fra hverandre om noe likevel kolliderer
+  relax(layout);
+  return layout;
+}
+
+function relax(layout) {
+  const entries = Object.values(layout);
+  const minDx = BOX_W + 24;
+  const minDy = BOX_H + 20;
+  for (let iter = 0; iter < 120; iter++) {
     let moved = false;
-    for (let i = 0; i < pos.length; i++) {
-      for (let j = i + 1; j < pos.length; j++) {
-        const a = pos[i], b = pos[j];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const ox = minDx - Math.abs(dx);
-        const oy = minDy - Math.abs(dy);
+    for (let i = 0; i < entries.length; i++) {
+      for (let j = i + 1; j < entries.length; j++) {
+        const a = entries[i], b = entries[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const ox = minDx - Math.abs(dx), oy = minDy - Math.abs(dy);
         if (ox > 0 && oy > 0) {
           moved = true;
-          // dytt langs aksen med minst overlapp
-          if (ox / minDx < oy / minDy) {
-            const push = (ox / 2 + 1) * (dx >= 0 ? 1 : -1);
-            a.x -= push;
-            b.x += push;
-          } else {
-            const push = (oy / 2 + 1) * (dy >= 0 ? 1 : -1);
-            a.y -= push;
-            b.y += push;
-          }
+          const push = (oy / 2 + 1) * (dy >= 0 ? 1 : -1);
+          a.y -= push;
+          b.y += push;
         }
       }
     }
     if (!moved) break;
   }
-
-  const layout = {};
-  for (const p of pos) {
-    layout[p.c.id] = {
-      x: Math.max(PAD, Math.min(W - PAD, p.x)),
-      y: Math.max(PAD - 30, Math.min(H - PAD + 30, p.y)),
-    };
+  for (const p of entries) {
+    p.x = Math.max(PAD - 20, Math.min(W - PAD + 20, p.x));
+    p.y = Math.max(PAD - 40, Math.min(H - PAD + 40, p.y));
   }
-  return layout;
 }
 
-function renderDiagram(analysis) {
+function renderDiagram(rawAnalysis) {
+  const analysis = pruneMeters(rawAnalysis);
   const byId = {};
   for (const c of analysis.components) byId[c.id] = c;
-  const layout = resolveOverlaps(analysis.components);
+  const layout = layeredLayout(analysis.components, analysis.connections);
 
   const svg = [];
   svg.push(`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`);

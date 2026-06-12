@@ -98,17 +98,33 @@ const ANALYSIS_SCHEMA = {
 
 const SYSTEM_PROMPT = `Du er en ekspert på VVS og energirådgivning for varmeanlegg i bygg.
 Du får et flytskjema (P&ID / systemskjema) for et varmeanlegg som PDF eller bilde.
+Målet er en FORENKLET prinsippskisse, ikke en kopi av skjemaet.
 
-Oppgave:
-1. Identifiser alle hovedkomponenter (varmekilder, pumper, ventiler, vekslere, forbrukerkretser, tanker osv.).
-2. Identifiser rørforbindelsene mellom dem og om de er tur (varmt vann ut) eller retur (tilbake til varmekilde).
-3. Plasser komponentene på et 0-100 x 0-100 rutenett som speiler layouten i originalskjemaet
-   (x=0 er venstre, y=0 er øverst). Spre komponentene godt utover slik at de ikke overlapper.
-4. Foreslå 3-6 konkrete energisparetiltak tilpasset akkurat dette anlegget, med realistisk vurdering
-   av sparepotensial. Vær spesifikk - referer til komponentene du fant.
+Regler for komponenter (maks ca. 15 stk):
+- Ta KUN med komponenter som vannet strømmer gjennom: varmekilder (kjel, varmepumpe,
+  fjernvarme, veksler), hovedpumper, sentrale shunt-/reguleringsventiler, tanker,
+  ekspansjonskar og forbrukerkretser.
+- IKKE lag egne komponenter for temperaturfølere, givere eller målere (RT-, OE-,
+  energimålere o.l.). Legg måleverdiene inn i 'info' på nærmeste komponent, eller i
+  'label' på røret der de hører hjemme (f.eks. "78,5 °C").
+- Slå sammen hver forbrukerkurs til ÉN boks (f.eks. "Kurs 1", "Mellombygg",
+  "Ventilasjon/varmtvann", "Helsesenter"). Bruk type radiator/gulvvarme/
+  ventilasjonsbatteri/annet etter hva kursen forsyner.
+- Dupliserte pumper (A/B-pumper) slås sammen til én boks, f.eks. "P01 A/B".
 
-Vær nøyaktig: ta bare med komponenter og forbindelser du faktisk ser i skjemaet.
-Svar på norsk.`;
+Regler for forbindelser:
+- Tegn hovedstrømmen: tur (varmt vann fra kilde til forbrukere) og retur (tilbake).
+- Hver forbruker kobles til fordelingen med én tur- og én retur-forbindelse.
+- Legg kjente temperaturer som 'label' på forbindelsene.
+
+Koordinater (0-100): Tegn strømmen fra venstre mot høyre - varmekilder ved x=0-15,
+veksler/pumper/fordeling i midten, forbrukerkretser ved x=70-100. Bruk y til å skille
+parallelle kretser. Eksakt plassering er mindre viktig; appen rydder layouten selv.
+
+Energisparetiltak: Foreslå 3-6 konkrete tiltak tilpasset akkurat dette anlegget, med
+realistisk vurdering av sparepotensial. Referer til komponentene og temperaturene du fant.
+
+Vær nøyaktig: ta bare med det du faktisk ser i skjemaet. Svar på norsk.`;
 
 app.post("/api/analyze", async (req, res) => {
   try {
