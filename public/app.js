@@ -9,6 +9,7 @@ const SOURCES = new Set(["kjel", "varmepumpe", "fjernvarme", "solfanger"]);
 const CONSUMERS = new Set(["radiator", "gulvvarme", "ventilasjonsbatteri"]);
 
 let currentAnalysis = null;
+let scene = null; // gjeldende diagramtilstand (layout + klassifisering)
 
 // --- Enkle P&ID-inspirerte symboler (SVG) ---
 
@@ -172,9 +173,11 @@ function render(analysis) {
   resultEl.classList.remove("hidden");
 }
 
-const W = 1200, H = 640;
+const W = 1200, H = 660;
 const PAD = 56;
 const BOX_W = 124, BOX_H = 48;
+const TUR_Y = H * 0.62;
+const RET_Y = TUR_Y + 24;
 
 // Fjerner følere/målere som likevel kom med, og brokobler rørene gjennom dem
 function pruneMeters(analysis) {
@@ -210,22 +213,41 @@ function pruneMeters(analysis) {
   };
 }
 
-// Klassisk systemskjema: rød tur-skinne og blå retur-skinne horisontalt,
-// produksjon til venstre (kjeler hevet over skinnene), kurser som tapper
-// av vertikalt oppover, ekspansjonskar under.
 function renderDiagram(rawAnalysis) {
   const analysis = pruneMeters(rawAnalysis);
+  scene = buildScene(analysis);
+  applyOverrides();
+  drawScene();
+}
+
+// Klassifiserer komponentene og beregner grunnplasseringen
+function buildScene(analysis) {
   const comps = analysis.components;
   const ids = new Set(comps.map((c) => c.id));
   const conns = analysis.connections.filter((c) => ids.has(c.from) && ids.has(c.to));
   const neighborsOf = (id) =>
     conns.filter((c) => c.from === id || c.to === id).map((c) => (c.from === id ? c.to : c.from));
 
-  // Klassifisering
-  const consumers = comps.filter((c) => CONSUMERS.has(c.type));
-  const consumerIds = new Set(consumers.map((c) => c.id));
+  // "Sluk" i strømretningen (retur snudd): komponenter uten utgående strøm = forbrukere
+  const outdeg = new Map(comps.map((c) => [c.id, 0]));
+  for (const cn of conns) {
+    const [f] = cn.type === "retur" ? [cn.to] : [cn.from];
+    outdeg.set(f, (outdeg.get(f) || 0) + 1);
+  }
+
   const vessels = comps.filter((c) => c.type === "ekspansjonskar" || c.type === "tank");
   const vesselIds = new Set(vessels.map((c) => c.id));
+
+  const consumers = comps.filter(
+    (c) =>
+      !vesselIds.has(c.id) &&
+      (CONSUMERS.has(c.type) ||
+        (c.type === "annet" &&
+          neighborsOf(c.id).length > 0 &&
+          (outdeg.get(c.id) || 0) === 0))
+  );
+  const consumerIds = new Set(consumers.map((c) => c.id));
+
   const feeders = comps.filter(
     (c) =>
       (c.type === "ventil" || c.type === "shuntventil") &&
@@ -233,9 +255,7 @@ function renderDiagram(rawAnalysis) {
   );
   const feederIds = new Set(feeders.map((c) => c.id));
 
-  const elevated = comps.filter(
-    (c) => c.type === "kjel" && !consumerIds.has(c.id)
-  );
+  const elevated = comps.filter((c) => c.type === "kjel" && !consumerIds.has(c.id));
   const elevatedIds = new Set(elevated.map((c) => c.id));
 
   const chainScore = { fjernvarme: 0, varmepumpe: 0, solfanger: 0, varmeveksler: 1, kjel: 2, pumpe: 3 };
@@ -243,116 +263,170 @@ function renderDiagram(rawAnalysis) {
     .filter((c) => !consumerIds.has(c.id) && !feederIds.has(c.id) && !vesselIds.has(c.id))
     .sort((a, b) => (chainScore[a.type] ?? 4) - (chainScore[b.type] ?? 4) || a.x - b.x);
 
-  // Geometri
-  const turY = H * 0.62;
-  const retY = turY + 24;
-  const topY = H * 0.16;
+  // Grunnplassering
+  const topY = H * 0.15;
   const feederY = H * 0.385;
-  const kjelY = turY - 120;
+  const kjelY = TUR_Y - 124;
   const vesselY = H * 0.9;
 
   const layout = {};
   let cursor = PAD + BOX_W / 2;
-  const chainStep = Math.min(
-    BOX_W + 46,
-    chainSeq.length > 1 ? (W * 0.42 - PAD) / (chainSeq.length - 1) : BOX_W + 46
-  );
+  const chainStep = BOX_W + 30; // fast steg: aldri overlapp i kjeden
   for (const c of chainSeq) {
-    layout[c.id] = { x: cursor, y: elevatedIds.has(c.id) ? kjelY : (turY + retY) / 2 };
+    layout[c.id] = { x: cursor, y: elevatedIds.has(c.id) ? kjelY : (TUR_Y + RET_Y) / 2 };
     cursor += chainStep;
   }
   const chainEndX = cursor - chainStep;
 
-  // Kursene etter hverandre øverst, i samme rekkefølge som i originaltegningen
   const sortedCons = [...consumers].sort((a, b) => a.x - b.x || a.y - b.y);
-  const consStart = Math.max(chainEndX + BOX_W, W * 0.46);
+  const consStart = Math.max(chainEndX + BOX_W, W * 0.42);
   const consEnd = W - PAD - BOX_W / 2;
   const kSpacing = sortedCons.length > 1 ? (consEnd - consStart) / (sortedCons.length - 1) : 0;
   const stagger = kSpacing > 0 && kSpacing < BOX_W + 14;
   sortedCons.forEach((c, i) => {
     layout[c.id] = {
       x: sortedCons.length > 1 ? consStart + i * kSpacing : consEnd,
-      y: topY + (stagger && i % 2 === 1 ? BOX_H + 22 : 0),
+      y: topY + (stagger && i % 2 === 1 ? BOX_H + 24 : 0),
     };
   });
 
-  // Shunter på stigerøret til kursene de betjener
   for (const f of feeders) {
     const served = neighborsOf(f.id).filter((n) => consumerIds.has(n));
     const xs = served.map((n) => layout[n]?.x ?? W * 0.6);
     layout[f.id] = { x: xs.reduce((s, v) => s + v, 0) / xs.length, y: feederY };
   }
 
-  // Ekspansjonskar/tanker under skinnene
   vessels.forEach((c, i) => {
     layout[c.id] = { x: Math.max(PAD + BOX_W / 2, chainEndX - i * (BOX_W + 40)), y: vesselY };
   });
 
-  // Temperatur-etiketter per kurs (fra modellens forbindelser)
-  const consLabel = {};
+  // Temperaturetiketter
+  const turLabel = {};   // forbruker-id -> turtemp
+  const retLabel = {};   // forbruker-id -> returtemp
+  const trunkLabels = []; // {x, type, text} på skinnene
   for (const cn of conns) {
-    if (cn.label) {
-      if (consumerIds.has(cn.to)) consLabel[cn.to] = consLabel[cn.to] || cn.label;
-      if (consumerIds.has(cn.from)) consLabel[cn.from] = consLabel[cn.from] || cn.label;
+    if (!cn.label) continue;
+    const fCons = consumerIds.has(cn.from);
+    const tCons = consumerIds.has(cn.to);
+    if (fCons || tCons) {
+      const id = fCons ? cn.from : cn.to;
+      if (cn.type === "retur") retLabel[id] = retLabel[id] || cn.label;
+      else turLabel[id] = turLabel[id] || cn.label;
+    } else {
+      const a = layout[cn.from], b = layout[cn.to];
+      if (a && b) trunkLabels.push({ x: (a.x + b.x) / 2, type: cn.type, text: cn.label });
     }
   }
 
-  // --- Tegn ---
+  const key =
+    "layout:" + analysis.systemName + "|" + comps.map((c) => c.id).sort().join(",");
+
+  return {
+    analysis, comps, conns, layout,
+    consumerIds, elevatedIds, vesselIds,
+    sortedCons, elevated, vessels,
+    turLabel, retLabel, trunkLabels,
+    key,
+  };
+}
+
+function applyOverrides() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(scene.key) || "{}");
+    for (const [id, p] of Object.entries(saved)) {
+      if (scene.layout[id] && typeof p.x === "number" && typeof p.y === "number") {
+        scene.layout[id] = { x: p.x, y: p.y };
+      }
+    }
+  } catch {}
+}
+
+function saveOverrides() {
+  try { localStorage.setItem(scene.key, JSON.stringify(scene.layout)); } catch {}
+}
+
+// Vertikalt rørpar mellom en boks og skinnene. toBox: strømmen går fra
+// skinne til boks (forbruker); ellers fra boks til skinne (kjel).
+function stubPair(x, y, toBox) {
+  const above = y < (TUR_Y + RET_Y) / 2;
+  const edge = above ? y + BOX_H / 2 : y - BOX_H / 2;
+  const turFrom = toBox ? TUR_Y : edge;
+  const turTo = toBox ? edge : TUR_Y;
+  const retFrom = toBox ? edge : RET_Y;
+  const retTo = toBox ? RET_Y : edge;
+  return {
+    tur: `M ${x - 8} ${turFrom} L ${x - 8} ${turTo}`,
+    ret: `M ${x + 8} ${retFrom} L ${x + 8} ${retTo}`,
+    midY: (edge + TUR_Y) / 2,
+  };
+}
+
+function drawScene() {
+  const s = scene;
+  if (!s) return;
+  const { layout } = s;
+
   const svg = [];
   svg.push(`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`);
   svg.push(SYMBOL_DEFS);
 
+  const xs = Object.values(layout).map((p) => p.x);
   const trunkStart = PAD - 14;
-  const lastRiserX = sortedCons.length ? Math.max(...sortedCons.map((c) => layout[c.id].x)) : chainEndX;
-  const trunkEnd = Math.min(W - 24, lastRiserX + 40);
+  const trunkEnd = Math.min(W - 24, Math.max(...xs, W * 0.5) + 44);
 
-  // Hovedskinner: tur mot høyre, retur tilbake mot venstre
-  const turPath = `M ${trunkStart} ${turY} L ${trunkEnd} ${turY}`;
-  const retPath = `M ${trunkEnd} ${retY} L ${trunkStart} ${retY}`;
+  const turPath = `M ${trunkStart} ${TUR_Y} L ${trunkEnd} ${TUR_Y}`;
+  const retPath = `M ${trunkEnd} ${RET_Y} L ${trunkStart} ${RET_Y}`;
   svg.push(`<path class="pipe tur" d="${turPath}"/>`);
   svg.push(`<path class="flow tur" d="${turPath}"/>`);
   svg.push(`<path class="pipe retur" d="${retPath}"/>`);
   svg.push(`<path class="flow retur" d="${retPath}"/>`);
 
-  // Spisslastkjeler over skinnene: fall ned til tur, løft fra retur
-  for (const c of elevated) {
-    const { x } = layout[c.id];
-    const boxBottom = kjelY + BOX_H / 2;
-    const tur = `M ${x - 8} ${boxBottom} L ${x - 8} ${turY}`;
-    const ret = `M ${x + 8} ${retY} L ${x + 8} ${boxBottom}`;
-    svg.push(`<path class="pipe tur" d="${tur}"/><path class="flow tur" d="${tur}"/>`);
-    svg.push(`<path class="pipe retur" d="${ret}"/><path class="flow retur" d="${ret}"/>`);
+  // Spisslastkjeler: fall ned til skinnene
+  for (const c of s.elevated) {
+    const { x, y } = layout[c.id];
+    const p = stubPair(x, y, false);
+    svg.push(`<path class="pipe tur" d="${p.tur}"/><path class="flow tur" d="${p.tur}"/>`);
+    svg.push(`<path class="pipe retur" d="${p.ret}"/><path class="flow retur" d="${p.ret}"/>`);
   }
 
-  // Stigerør til hver kurs: tur opp, retur ned
-  for (const c of sortedCons) {
+  // Stigerør til hver kurs + temperaturer
+  for (const c of s.sortedCons) {
     const { x, y } = layout[c.id];
-    const boxBottom = y + BOX_H / 2;
-    const tur = `M ${x - 8} ${turY} L ${x - 8} ${boxBottom}`;
-    const ret = `M ${x + 8} ${boxBottom} L ${x + 8} ${retY}`;
-    svg.push(`<path class="pipe tur" d="${tur}"/><path class="flow tur" d="${tur}"/>`);
-    svg.push(`<path class="pipe retur" d="${ret}"/><path class="flow retur" d="${ret}"/>`);
-    if (consLabel[c.id]) {
-      svg.push(
-        `<text class="pipe-label" x="${x - 14}" y="${(turY + boxBottom) / 2}" text-anchor="end">${esc(consLabel[c.id])}</text>`
-      );
+    const p = stubPair(x, y, true);
+    svg.push(`<path class="pipe tur" d="${p.tur}"/><path class="flow tur" d="${p.tur}"/>`);
+    svg.push(`<path class="pipe retur" d="${p.ret}"/><path class="flow retur" d="${p.ret}"/>`);
+    if (s.turLabel[c.id]) {
+      svg.push(`<text class="pipe-label lbl-tur" x="${x - 14}" y="${p.midY}" text-anchor="end">${esc(s.turLabel[c.id])}</text>`);
+    }
+    if (s.retLabel[c.id]) {
+      svg.push(`<text class="pipe-label lbl-retur" x="${x + 14}" y="${p.midY + 13}" text-anchor="start">${esc(s.retLabel[c.id])}</text>`);
     }
   }
 
-  // Ekspansjonskar: enkel ledning ned fra returskinnen
-  for (const c of vessels) {
+  // Temperaturer langs skinnene
+  for (const t of s.trunkLabels) {
+    const y = t.type === "retur" ? RET_Y + 16 : TUR_Y - 8;
+    const cls = t.type === "retur" ? "lbl-retur" : "lbl-tur";
+    svg.push(`<text class="pipe-label ${cls}" x="${t.x}" y="${y}">${esc(t.text)}</text>`);
+  }
+
+  // Ekspansjonskar: ledning ned fra returskinnen
+  for (const c of s.vessels) {
     const { x, y } = layout[c.id];
-    const line = `M ${x} ${retY} L ${x} ${y - BOX_H / 2}`;
+    const top = y - BOX_H / 2;
+    const line = top > RET_Y
+      ? `M ${x} ${RET_Y} L ${x} ${top}`
+      : `M ${x} ${y + BOX_H / 2} L ${x} ${RET_Y}`;
     svg.push(`<path class="pipe annet" d="${line}" stroke-dasharray="4 5"/>`);
   }
 
-  // Komponentbokser (over linjene)
-  for (const c of comps) {
+  // Komponentbokser (kan dras)
+  for (const c of s.comps) {
     if (!layout[c.id]) continue;
     const { x: cx, y: cy } = layout[c.id];
-    const cls = SOURCES.has(c.type) ? "source" : CONSUMERS.has(c.type) ? "consumer" : "";
+    const cls = SOURCES.has(c.type) ? "source" : s.consumerIds.has(c.id) ? "consumer" : "";
     const icon = `ic-${ICON_TYPES[c.type] ? c.type : "annet"}`;
-    svg.push(`<g>`);
+    svg.push(`<g class="comp" data-id="${esc(c.id)}">`);
     svg.push(
       `<rect class="comp-box ${cls}" x="${cx - BOX_W / 2}" y="${cy - BOX_H / 2}" width="${BOX_W}" height="${BOX_H}" rx="9"/>`
     );
@@ -367,9 +441,8 @@ function renderDiagram(rawAnalysis) {
     svg.push(`</g>`);
   }
 
-  // Skinne-etiketter
-  svg.push(`<text class="pipe-label" x="${trunkStart + 4}" y="${turY - 8}" text-anchor="start">Tur</text>`);
-  svg.push(`<text class="pipe-label" x="${trunkStart + 4}" y="${retY + 16}" text-anchor="start">Retur</text>`);
+  svg.push(`<text class="pipe-label" x="${trunkStart + 4}" y="${TUR_Y - 8}" text-anchor="start">Tur</text>`);
+  svg.push(`<text class="pipe-label" x="${trunkStart + 4}" y="${RET_Y + 16}" text-anchor="start">Retur</text>`);
 
   svg.push(`</svg>`);
   diagramEl.innerHTML = svg.join("");
@@ -381,6 +454,60 @@ const ICON_TYPES = {
   varmeveksler: 1, ventil: 1, shuntventil: 1, radiator: 1, gulvvarme: 1,
   ventilasjonsbatteri: 1, tank: 1, ekspansjonskar: 1, maaler: 1, annet: 1,
 };
+
+// --- Dra-og-slipp av komponenter ---
+
+let dragState = null;
+
+function svgPoint(e) {
+  const svgEl = diagramEl.querySelector("svg");
+  if (!svgEl) return { x: 0, y: 0 };
+  const r = svgEl.getBoundingClientRect();
+  return {
+    x: ((e.clientX - r.left) / r.width) * W,
+    y: ((e.clientY - r.top) / r.height) * H,
+  };
+}
+
+diagramEl.addEventListener("pointerdown", (e) => {
+  const g = e.target.closest(".comp[data-id]");
+  if (!g || !scene) return;
+  const id = g.getAttribute("data-id");
+  if (!scene.layout[id]) return;
+  const pt = svgPoint(e);
+  dragState = {
+    id,
+    dx: scene.layout[id].x - pt.x,
+    dy: scene.layout[id].y - pt.y,
+  };
+  e.preventDefault();
+});
+
+window.addEventListener("pointermove", (e) => {
+  if (!dragState || !scene) return;
+  const pt = svgPoint(e);
+  scene.layout[dragState.id] = {
+    x: Math.max(BOX_W / 2, Math.min(W - BOX_W / 2, pt.x + dragState.dx)),
+    y: Math.max(BOX_H / 2, Math.min(H - BOX_H / 2, pt.y + dragState.dy)),
+  };
+  drawScene();
+});
+
+window.addEventListener("pointerup", () => {
+  if (dragState) {
+    saveOverrides();
+    dragState = null;
+  }
+});
+
+const resetLayoutBtn = document.getElementById("resetLayoutBtn");
+if (resetLayoutBtn) {
+  resetLayoutBtn.addEventListener("click", () => {
+    if (!scene) return;
+    try { localStorage.removeItem(scene.key); } catch {}
+    renderDiagram(currentAnalysis);
+  });
+}
 
 function renderOptimizations(opts) {
   const order = { hoy: 0, middels: 1, lav: 2 };
@@ -413,7 +540,6 @@ const sim = {
 };
 
 function initSimulation(analysis) {
-  // Faktor for turtemperatur-senking avhenger av varmekilde
   const hasHeatPump = analysis.components.some((c) => c.type === "varmepumpe");
   sim.dtFactor = hasHeatPump ? 2.5 : 0.7;
   sim.sourceLabel = hasHeatPump
@@ -441,15 +567,9 @@ function updateSimulation() {
   const pumpPct = parseFloat(sim.pump.value);
   const nightH = parseFloat(sim.night.value);
 
-  // 1) Lavere turtemperatur: bedre virkningsgrad/COP + lavere tap
   const dtSave = dT * sim.dtFactor;
-
-  // 2) Pumpeturtall: affinitetslovene, effekt ~ turtall^3.
-  //    Antar pumpeenergi tilsvarer ~4 % av varmebehovet.
   const pumpShare = 4;
   const pumpSave = pumpShare * (1 - Math.pow(pumpPct / 100, 3));
-
-  // 3) Nattsenking: ~0,3 % av varmebehovet per time med senket temperatur
   const nightSave = nightH * 0.3;
 
   const totalPct = Math.min(40, dtSave + pumpSave + nightSave);
@@ -472,8 +592,6 @@ function updateSimulation() {
   applyFlowSpeed();
 }
 
-// Vannstrøm-animasjonen følger pumpeturtallet.
-// Settes som CSS-variabel på containeren så den treffer alle rør, også nye.
 function applyFlowSpeed() {
   const pumpPct = parseFloat(sim.pump.value) || 100;
   const duration = Math.pow(100 / pumpPct, 1.8); // 100 % -> 1s, 50 % -> ~3,5s

@@ -115,7 +115,10 @@ Regler for komponenter (maks ca. 15 stk):
 Regler for forbindelser:
 - Tegn hovedstrømmen: tur (varmt vann fra kilde til forbrukere) og retur (tilbake).
 - Hver forbruker kobles til fordelingen med én tur- og én retur-forbindelse.
-- Legg kjente temperaturer som 'label' på forbindelsene.
+- Ta med ALLE temperaturer du ser i skjemaet: legg dem som 'label' på riktig
+  forbindelse (turtemperatur på tur-forbindelsen, returtemperatur på retur-
+  forbindelsen, per kurs der det finnes). Temperaturer som hører til en
+  komponent (f.eks. kjeltemperatur) legges i komponentens 'info'.
 
 Koordinater (0-100): Tegn strømmen fra venstre mot høyre - varmekilder ved x=0-15,
 veksler/pumper/fordeling i midten, forbrukerkretser ved x=70-100. Bruk y til å skille
